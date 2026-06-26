@@ -4,86 +4,133 @@ server_asisten.py — Asisten PC Versi Chrome
 Python berjalan sebagai WebSocket server di background.
 Chrome membuka asisten.html sebagai "telinga" (Web Speech API).
 Python menerima teks dari Chrome dan mengeksekusi perintah native Windows.
+
+Perintah yang didukung:
+  Buka [app]           → buka aplikasi
+  Tutup [app]          → tutup/kill proses aplikasi
+  Sembunyikan [app]    → minimize jendela app
+  Sembunyikan semua    → minimize semua jendela (Win+D)
+  Volume naik          → keraskan suara
+  Volume turun         → pelankan suara
+  Diamkan suara        → mute/unmute
+  Mainkan              → play media
+  Jeda                 → pause media
+  Layar penuh          → toggle fullscreen (F11)
+  Ketik [teks]         → ketik teks ke field aktif
 """
 
 import asyncio
+import ctypes
 import json
+import logging
 import os
 import subprocess
 import threading
+import time
 import webbrowser
 import websockets
+import pygetwindow as gw
+import pyperclip
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-import logging
 
 # Matikan log bawaan HTTP server agar terminal bersih
 logging.getLogger('http.server').setLevel(logging.ERROR)
 
 # ── Konfigurasi ───────────────────────────────────────────────────────────────
 HOST      = "localhost"
-PORT      = 8765       # WebSocket
-HTTP_PORT = 8766       # HTTP server (agar Chrome ingat izin mic)
+PORT      = 8765        # WebSocket
+HTTP_PORT = 8766        # HTTP server (agar Chrome ingat izin mic)
 HTML_DIR  = Path(__file__).parent
 HTML_PATH = HTML_DIR / "asisten.html"
 
-# ── Pemetaan perintah ke aplikasi ─────────────────────────────────────────────
-# Kunci    : kata kunci dalam ucapan (lowercase)
-# "app"    : nama untuk AppOpener (match_closest)
-# "cmd"    : perintah shell langsung (lebih andal untuk UWP/built-in)
-# "url"    : buka URL di browser
-APP_MAP = {
-    "whatsapp"     : {"cmd": "start whatsapp:"},
-    "notepad"      : {"cmd": "start notepad"},
-    "kalkulator"   : {"cmd": "start calc"},
-    "calculator"   : {"cmd": "start calc"},
-    "chrome"       : {"app": "chrome"},
-    "spotify"      : {"cmd": "start spotify:"},
-    "vscode"       : {"app": "visual studio code"},
-    "file explorer" : {"cmd": "start explorer"},
-    "explorer"     : {"cmd": "start explorer"},
-    "word"         : {"app": "microsoft word"},
-    "excel"        : {"app": "microsoft excel"},
-    "powerpoint"   : {"app": "microsoft powerpoint"},
-    "youtube"      : {"url": "https://youtube.com"},
-    "google"       : {"url": "https://google.com"},
-    "instagram"    : {"url": "https://instagram.com"},
-    "gmail"        : {"url": "https://mail.google.com"},
+# ── Pemetaan App → Nama Proses (untuk tutup via taskkill) ────────────────────
+PROCESS_MAP = {
+    "whatsapp"    : "WhatsApp.exe",
+    "notepad"     : "notepad.exe",
+    "chrome"      : "chrome.exe",
+    "spotify"     : "Spotify.exe",
+    "explorer"    : "explorer.exe",
+    "word"        : "WINWORD.EXE",
+    "excel"       : "EXCEL.EXE",
+    "powerpoint"  : "POWERPNT.EXE",
+    "vscode"      : "Code.exe",
+    "kalkulator"  : "CalculatorApp.exe",
+    "calculator"  : "CalculatorApp.exe",
+    "telegram"    : "Telegram.exe",
+    "discord"     : "Discord.exe",
+    "teams"       : "Teams.exe",
 }
 
-# Kata pemicu perintah buka
-BUKA_TRIGGERS = ["buka", "open", "jalankan", "aktifkan", "launch"]
+# ── Pemetaan Perintah Buka App ────────────────────────────────────────────────
+# "cmd" = perintah shell langsung (andal untuk UWP & built-in Windows)
+# "app" = nama untuk AppOpener (match_closest)
+# "url" = buka URL di browser
+APP_MAP = {
+    "whatsapp"      : {"cmd": "start whatsapp:"},
+    "notepad"       : {"cmd": "start notepad"},
+    "kalkulator"    : {"cmd": "start calc"},
+    "calculator"    : {"cmd": "start calc"},
+    "chrome"        : {"app": "chrome"},
+    "spotify"       : {"cmd": "start spotify:"},
+    "vscode"        : {"app": "visual studio code"},
+    "file explorer" : {"cmd": "start explorer"},
+    "explorer"      : {"cmd": "start explorer"},
+    "word"          : {"app": "microsoft word"},
+    "excel"         : {"app": "microsoft excel"},
+    "powerpoint"    : {"app": "microsoft powerpoint"},
+    "telegram"      : {"app": "telegram"},
+    "discord"       : {"app": "discord"},
+    "youtube"       : {"url": "https://youtube.com"},
+    "google"        : {"url": "https://google.com"},
+    "instagram"     : {"url": "https://instagram.com"},
+    "gmail"         : {"url": "https://mail.google.com"},
+}
+
+# ── Kata Pemicu ───────────────────────────────────────────────────────────────
+BUKA_TRIGGERS       = ["buka", "open", "jalankan", "aktifkan", "launch"]
+TUTUP_TRIGGERS      = ["tutup", "close", "keluar", "matikan"]
+SEMBUNYI_TRIGGERS   = ["sembunyikan", "minimize", "kecilkan"]
+KETIK_TRIGGERS      = ["ketik", "tulis", "type"]
+
+# Perintah sistem tanpa target (dipetakan langsung)
+SYSTEM_COMMANDS = {
+    "volume naik"     : "volume_up",
+    "keraskan suara"  : "volume_up",
+    "keraskan"        : "volume_up",
+    "volume turun"    : "volume_down",
+    "pelankan suara"  : "volume_down",
+    "pelankan"        : "volume_down",
+    "diamkan suara"   : "mute",
+    "diamkan"         : "mute",
+    "mute"            : "mute",
+    "mainkan"         : "play_pause",
+    "play"            : "play_pause",
+    "jeda"            : "play_pause",
+    "pause"           : "play_pause",
+    "layar penuh"     : "fullscreen",
+    "fullscreen"      : "fullscreen",
+    "sembunyikan semua" : "minimize_all",
+    "kecilkan semua"  : "minimize_all",
+    "minimize semua"  : "minimize_all",
+}
 
 
-def parse_command(text: str):
-    """
-    Menganalisa teks transkripsi dan mengembalikan aksi yang harus dijalankan.
-    Return: dict {"type": "app"/"url"/"unknown", "target": ..., "display": ...}
-    """
-    text = text.lower().strip()
+# ══════════════════════════════════════════════════════════════════════════════
+#  FUNGSI AKSI
+# ══════════════════════════════════════════════════════════════════════════════
 
-    # Cek apakah ada kata pemicu "buka X"
-    triggered = False
-    for trigger in BUKA_TRIGGERS:
-        if text.startswith(trigger):
-            text = text[len(trigger):].strip()
-            triggered = True
-            break
-
-    if not triggered:
-        return None  # abaikan ucapan yang tidak dimulai dengan pemicu
-
-    # Cocokkan dengan APP_MAP
-    for keyword, action in APP_MAP.items():
-        if keyword in text:
-            return {**action, "display": keyword}
-
-    # Tidak ada yang cocok — coba buka dengan AppOpener secara dinamis
-    return {"app": text, "display": text}
+# ── Helper: tekan virtual key Windows ────────────────────────────────────────
+def _press_vk(vk_code: int):
+    KEYEVENTF_EXTENDEDKEY = 0x0001
+    KEYEVENTF_KEYUP       = 0x0002
+    ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_EXTENDEDKEY, 0)
+    time.sleep(0.05)
+    ctypes.windll.user32.keybd_event(vk_code, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
 
 
+# ── Buka ─────────────────────────────────────────────────────────────────────
 def open_cmd(shell_cmd: str) -> str:
-    """Jalankan perintah shell langsung (untuk UWP / built-in Windows)."""
     try:
         subprocess.Popen(shell_cmd, shell=True)
         return f"OK (cmd): '{shell_cmd}'"
@@ -92,27 +139,200 @@ def open_cmd(shell_cmd: str) -> str:
 
 
 def open_app(app_name: str) -> str:
-    """Buka aplikasi menggunakan AppOpener, fallback ke shell 'start'."""
     try:
         import appopener
         appopener.open(app_name, match_closest=True, output=False)
         return f"OK: '{app_name}' dibuka."
     except Exception:
-        # Fallback: shell start
         try:
             subprocess.Popen(f'start "" "{app_name}"', shell=True)
-            return f"OK (fallback shell): '{app_name}'"
-        except Exception as e2:
-            return f"GAGAL membuka '{app_name}': {e2}"
+            return f"OK (fallback): '{app_name}'"
+        except Exception as e:
+            return f"GAGAL: {e}"
 
 
 def open_url(url: str) -> str:
-    """Buka URL di browser default."""
     webbrowser.open(url)
-    return f"OK: URL '{url}' dibuka di browser."
+    return f"OK: URL '{url}' dibuka."
 
 
-# ── WebSocket Handler ─────────────────────────────────────────────────────────
+# ── Tutup ─────────────────────────────────────────────────────────────────────
+def close_app(name: str) -> str:
+    name_lower = name.lower().strip()
+
+    # Coba tutup via judul jendela
+    try:
+        matched = [w for w in gw.getAllWindows()
+                   if name_lower in w.title.lower() and w.title.strip()]
+        if matched:
+            for w in matched:
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            return f"OK: '{name}' ditutup via window."
+    except Exception:
+        pass
+
+    # Fallback: taskkill via nama proses
+    proc = PROCESS_MAP.get(name_lower)
+    if not proc:
+        proc = f"{name}.exe"
+    result = subprocess.run(
+        f"taskkill /f /im {proc}",
+        shell=True, capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return f"OK: '{name}' ditutup via taskkill."
+    return f"GAGAL tutup '{name}'. Proses tidak ditemukan."
+
+
+# ── Sembunyikan / Minimize ────────────────────────────────────────────────────
+def minimize_app(name: str) -> str:
+    name_lower = name.lower().strip()
+    try:
+        matched = [w for w in gw.getAllWindows()
+                   if name_lower in w.title.lower() and w.title.strip()]
+        if matched:
+            for w in matched:
+                try:
+                    w.minimize()
+                except Exception:
+                    pass
+            return f"OK: '{name}' diminimize."
+        return f"Tidak ditemukan jendela '{name}'."
+    except Exception as e:
+        return f"GAGAL minimize '{name}': {e}"
+
+
+def minimize_all() -> str:
+    # Win + D
+    VK_LWIN = 0x5B
+    VK_D    = 0x44
+    ctypes.windll.user32.keybd_event(VK_LWIN, 0, 0, 0)
+    ctypes.windll.user32.keybd_event(VK_D, 0, 0, 0)
+    time.sleep(0.05)
+    ctypes.windll.user32.keybd_event(VK_D, 0, 2, 0)
+    ctypes.windll.user32.keybd_event(VK_LWIN, 0, 2, 0)
+    return "OK: Semua jendela diminimize."
+
+
+# ── Volume ────────────────────────────────────────────────────────────────────
+def volume_up() -> str:
+    # Tekan 5x VK_VOLUME_UP (~10% naik)
+    for _ in range(5):
+        _press_vk(0xAF)
+        time.sleep(0.02)
+    return "OK: Volume naik."
+
+
+def volume_down() -> str:
+    for _ in range(5):
+        _press_vk(0xAE)
+        time.sleep(0.02)
+    return "OK: Volume turun."
+
+
+def mute() -> str:
+    _press_vk(0xAD)
+    return "OK: Mute/unmute."
+
+
+# ── Media ─────────────────────────────────────────────────────────────────────
+def play_pause() -> str:
+    _press_vk(0xB3)   # VK_MEDIA_PLAY_PAUSE
+    return "OK: Play/Pause."
+
+
+def fullscreen() -> str:
+    _press_vk(0x7A)   # F11
+    return "OK: Toggle fullscreen."
+
+
+# ── Ketik Teks ────────────────────────────────────────────────────────────────
+def type_text(text: str) -> str:
+    try:
+        pyperclip.copy(text)
+        time.sleep(0.15)
+        # Ctrl+V
+        ctypes.windll.user32.keybd_event(0x11, 0, 0, 0)   # Ctrl down
+        ctypes.windll.user32.keybd_event(0x56, 0, 0, 0)   # V down
+        time.sleep(0.05)
+        ctypes.windll.user32.keybd_event(0x56, 0, 2, 0)   # V up
+        ctypes.windll.user32.keybd_event(0x11, 0, 2, 0)   # Ctrl up
+        return f"OK: Teks '{text}' diketik."
+    except Exception as e:
+        return f"GAGAL ketik: {e}"
+
+
+# ── Dispatch sistem ───────────────────────────────────────────────────────────
+SYSTEM_DISPATCH = {
+    "volume_up"   : volume_up,
+    "volume_down" : volume_down,
+    "mute"        : mute,
+    "play_pause"  : play_pause,
+    "fullscreen"  : fullscreen,
+    "minimize_all": minimize_all,
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PARSER
+# ══════════════════════════════════════════════════════════════════════════════
+def parse_command(text: str):
+    """
+    Parse teks transkripsi menjadi aksi.
+    Return dict dengan key 'action' + parameter lain, atau None jika diabaikan.
+    """
+    original = text.strip()
+    text     = original.lower()
+
+    # ── Perintah sistem tanpa target (cek dulu sebelum trigger) ──────────────
+    for phrase, action in SYSTEM_COMMANDS.items():
+        if phrase in text:
+            return {"action": action}
+
+    # ── "ketik [teks]" ────────────────────────────────────────────────────────
+    for trigger in KETIK_TRIGGERS:
+        if text.startswith(trigger + " "):
+            content = original[len(trigger):].strip()
+            return {"action": "type", "text": content}
+
+    # ── "sembunyikan [app]" ───────────────────────────────────────────────────
+    for trigger in SEMBUNYI_TRIGGERS:
+        if text.startswith(trigger + " "):
+            target = text[len(trigger):].strip()
+            if any(k in target for k in ["semua", "all"]):
+                return {"action": "minimize_all"}
+            return {"action": "minimize", "target": target}
+
+    # ── "tutup [app]" ─────────────────────────────────────────────────────────
+    for trigger in TUTUP_TRIGGERS:
+        if text.startswith(trigger + " "):
+            target = text[len(trigger):].strip()
+            return {"action": "close", "target": target}
+
+    # ── "buka [app]" ──────────────────────────────────────────────────────────
+    for trigger in BUKA_TRIGGERS:
+        if text.startswith(trigger + " ") or text.startswith(trigger):
+            target = text[len(trigger):].strip()
+            if not target:
+                return None
+
+            # Cocokkan APP_MAP
+            for keyword, app_action in APP_MAP.items():
+                if keyword in target:
+                    return {"action": "open", **app_action, "display": keyword}
+
+            # Tidak ada di APP_MAP → coba AppOpener
+            return {"action": "open", "app": target, "display": target}
+
+    return None  # Tidak ada perintah yang cocok
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  WEBSOCKET HANDLER
+# ══════════════════════════════════════════════════════════════════════════════
 async def handler(websocket):
     client_addr = websocket.remote_address
     print(f"[+] Client terhubung: {client_addr}")
@@ -122,7 +342,6 @@ async def handler(websocket):
             try:
                 msg = json.loads(raw_msg)
             except json.JSONDecodeError:
-                print(f"[!] Pesan tidak valid (bukan JSON): {raw_msg}")
                 continue
 
             if msg.get("type") != "transcript":
@@ -136,23 +355,43 @@ async def handler(websocket):
 
             action = parse_command(text)
             if action is None:
-                print(f"[~] Diabaikan (tidak ada pemicu): {text}")
+                print(f"[~] Diabaikan: {text}")
                 continue
 
-            # Eksekusi
-            if "url" in action:
-                result = open_url(action["url"])
-                exec_display = f"Buka URL: {action['display']}"
-            elif "cmd" in action:
-                result = open_cmd(action["cmd"])
-                exec_display = f"Buka: {action['display']}"
-            else:
-                result = open_app(action["app"])
-                exec_display = f"Buka aplikasi: {action['display']}"
+            # ── Eksekusi berdasarkan action ───────────────────────────────────
+            act = action.get("action")
+            result       = "Aksi tidak dikenali."
+            exec_display = act
+
+            if act == "open":
+                if "url" in action:
+                    result       = open_url(action["url"])
+                    exec_display = f"Buka URL: {action['display']}"
+                elif "cmd" in action:
+                    result       = open_cmd(action["cmd"])
+                    exec_display = f"Buka: {action['display']}"
+                else:
+                    result       = open_app(action["app"])
+                    exec_display = f"Buka aplikasi: {action['display']}"
+
+            elif act == "close":
+                result       = close_app(action["target"])
+                exec_display = f"Tutup: {action['target']}"
+
+            elif act == "minimize":
+                result       = minimize_app(action["target"])
+                exec_display = f"Sembunyikan: {action['target']}"
+
+            elif act == "type":
+                result       = type_text(action["text"])
+                exec_display = f"Ketik: \"{action['text']}\""
+
+            elif act in SYSTEM_DISPATCH:
+                result       = SYSTEM_DISPATCH[act]()
+                exec_display = act.replace("_", " ").capitalize()
 
             print(f"[Eksekusi] {result}")
 
-            # Kirim feedback ke Chrome
             await websocket.send(json.dumps({
                 "type"   : "exec",
                 "command": exec_display,
@@ -165,11 +404,12 @@ async def handler(websocket):
         print(f"[-] Client terputus (error): {client_addr} — {e}")
 
 
-# ── HTTP Server (agar Chrome menyimpan izin mic) ─────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  HTTP SERVER (agar Chrome menyimpan izin mic)
+# ══════════════════════════════════════════════════════════════════════════════
 class SilentHTTPHandler(SimpleHTTPRequestHandler):
-    """HTTP handler tanpa log di terminal."""
     def log_message(self, format, *args):
-        pass  # diam
+        pass  # diam — tidak perlu log HTTP di terminal
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(HTML_DIR), **kwargs)
@@ -181,12 +421,11 @@ def start_http_server():
     server.serve_forever()
 
 
-# ── Buka Chrome ke asisten.html via localhost ─────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  LAUNCH BROWSER
+# ══════════════════════════════════════════════════════════════════════════════
 def launch_browser():
-    """
-    Buka asisten.html via http://localhost agar Chrome menyimpan izin mic.
-    Tampilan --app mode (tanpa address bar).
-    """
+    """Buka asisten.html via http://localhost agar Chrome menyimpan izin mic."""
     url = f"http://{HOST}:{HTTP_PORT}/asisten.html"
 
     chrome_paths = [
@@ -205,7 +444,7 @@ def launch_browser():
         subprocess.Popen([
             chrome_exe,
             f"--app={url}",
-            "--window-size=540,520",
+            "--window-size=540,560",
             "--window-position=40,40",
         ])
         print(f"[Browser] Chrome dibuka: {url}")
@@ -214,16 +453,18 @@ def launch_browser():
         print(f"[Browser] Browser default dibuka: {url}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 async def main():
-    print("=" * 52)
+    print("=" * 54)
     print("  Asisten PC — Server WebSocket Aktif")
     print(f"  WS  : ws://{HOST}:{PORT}")
     print(f"  HTTP: http://{HOST}:{HTTP_PORT}")
     print("  Tekan Ctrl+C untuk berhenti.")
-    print("=" * 52)
+    print("=" * 54)
 
-    # Jalankan HTTP server di thread terpisah (daemon)
+    # HTTP server di thread terpisah (daemon)
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
 

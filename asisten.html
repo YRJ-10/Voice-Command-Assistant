@@ -30,9 +30,9 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 32px;
+      gap: 20px;
       padding: 24px;
-      overflow: hidden;
+      overflow-y: auto;
     }
 
     /* Subtle background grid */
@@ -217,6 +217,46 @@
     .log-msg.heard  { color: var(--green); font-weight: 600; }
     .log-msg.exec   { color: var(--accent); }
     .log-msg.err    { color: var(--red); }
+
+    /* Perintah chips */
+    .chips-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 520px;
+      padding: 16px 20px;
+    }
+    .chips-title {
+      font-size: 10px;
+      letter-spacing: 2px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .chips-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .chip {
+      background: rgba(124,106,247,0.08);
+      border: 1px solid rgba(124,106,247,0.2);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .chip b { color: var(--accent); font-weight: 600; }
+    .chip.green { border-color: rgba(59,232,176,0.25); background: rgba(59,232,176,0.06); }
+    .chip.green b { color: var(--green); }
+    .chip.red   { border-color: rgba(247,106,106,0.25); background: rgba(247,106,106,0.06); }
+    .chip.red b { color: var(--red); }
+    .chip.yellow { border-color: rgba(247,200,100,0.25); background: rgba(247,200,100,0.06); }
+    .chip.yellow b { color: #f7c864; }
   </style>
 </head>
 <body>
@@ -242,6 +282,34 @@
   <div class="ws-status">
     <div class="dot" id="ws-dot"></div>
     <span id="ws-label">Menghubungkan ke server...</span>
+  </div>
+</div>
+
+<!-- Perintah Tersedia -->
+<div class="chips-card">
+  <div class="chips-title">Perintah Tersedia</div>
+
+  <div class="chips-group">
+    <div class="chip green"><b>Buka</b> + WhatsApp / Notepad / Spotify...</div>
+    <div class="chip red"><b>Tutup</b> + nama app</div>
+    <div class="chip"><b>Sembunyikan</b> + nama app</div>
+    <div class="chip"><b>Sembunyikan semua</b></div>
+  </div>
+
+  <div class="chips-group">
+    <div class="chip yellow"><b>Volume naik</b></div>
+    <div class="chip yellow"><b>Volume turun</b></div>
+    <div class="chip yellow"><b>Diamkan suara</b></div>
+  </div>
+
+  <div class="chips-group">
+    <div class="chip"><b>Mainkan</b></div>
+    <div class="chip"><b>Jeda</b></div>
+    <div class="chip"><b>Layar penuh</b></div>
+  </div>
+
+  <div class="chips-group">
+    <div class="chip green"><b>Ketik</b> + teks apapun</div>
   </div>
 </div>
 
