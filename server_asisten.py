@@ -10,33 +10,45 @@ import asyncio
 import json
 import os
 import subprocess
+import threading
 import webbrowser
 import websockets
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+import logging
+
+# Matikan log bawaan HTTP server agar terminal bersih
+logging.getLogger('http.server').setLevel(logging.ERROR)
 
 # ── Konfigurasi ───────────────────────────────────────────────────────────────
-HOST = "localhost"
-PORT = 8765
-HTML_PATH = Path(__file__).parent / "asisten.html"
+HOST      = "localhost"
+PORT      = 8765       # WebSocket
+HTTP_PORT = 8766       # HTTP server (agar Chrome ingat izin mic)
+HTML_DIR  = Path(__file__).parent
+HTML_PATH = HTML_DIR / "asisten.html"
 
 # ── Pemetaan perintah ke aplikasi ─────────────────────────────────────────────
-# Kunci: kata kunci dalam ucapan (lowercase)
-# Nilai: nama aplikasi untuk AppOpener, atau perintah langsung
+# Kunci    : kata kunci dalam ucapan (lowercase)
+# "app"    : nama untuk AppOpener (match_closest)
+# "cmd"    : perintah shell langsung (lebih andal untuk UWP/built-in)
+# "url"    : buka URL di browser
 APP_MAP = {
-    "whatsapp"    : {"app": "whatsapp"},
-    "notepad"     : {"app": "notepad"},
-    "kalkulator"  : {"app": "calculator"},
-    "calculator"  : {"app": "calculator"},
-    "chrome"      : {"app": "chrome"},
-    "spotify"     : {"app": "spotify"},
-    "vscode"      : {"app": "visual studio code"},
-    "file explorer": {"app": "explorer"},
-    "explorer"    : {"app": "explorer"},
-    "word"        : {"app": "microsoft word"},
-    "excel"       : {"app": "microsoft excel"},
-    "powerpoint"  : {"app": "microsoft powerpoint"},
-    "youtube"     : {"url": "https://youtube.com"},
-    "google"      : {"url": "https://google.com"},
+    "whatsapp"     : {"cmd": "start whatsapp:"},
+    "notepad"      : {"cmd": "start notepad"},
+    "kalkulator"   : {"cmd": "start calc"},
+    "calculator"   : {"cmd": "start calc"},
+    "chrome"       : {"app": "chrome"},
+    "spotify"      : {"cmd": "start spotify:"},
+    "vscode"       : {"app": "visual studio code"},
+    "file explorer" : {"cmd": "start explorer"},
+    "explorer"     : {"cmd": "start explorer"},
+    "word"         : {"app": "microsoft word"},
+    "excel"        : {"app": "microsoft excel"},
+    "powerpoint"   : {"app": "microsoft powerpoint"},
+    "youtube"      : {"url": "https://youtube.com"},
+    "google"       : {"url": "https://google.com"},
+    "instagram"    : {"url": "https://instagram.com"},
+    "gmail"        : {"url": "https://mail.google.com"},
 }
 
 # Kata pemicu perintah buka
@@ -70,17 +82,26 @@ def parse_command(text: str):
     return {"app": text, "display": text}
 
 
+def open_cmd(shell_cmd: str) -> str:
+    """Jalankan perintah shell langsung (untuk UWP / built-in Windows)."""
+    try:
+        subprocess.Popen(shell_cmd, shell=True)
+        return f"OK (cmd): '{shell_cmd}'"
+    except Exception as e:
+        return f"GAGAL (cmd): {e}"
+
+
 def open_app(app_name: str) -> str:
-    """Buka aplikasi menggunakan AppOpener."""
+    """Buka aplikasi menggunakan AppOpener, fallback ke shell 'start'."""
     try:
         import appopener
         appopener.open(app_name, match_closest=True, output=False)
         return f"OK: '{app_name}' dibuka."
-    except Exception as e:
-        # Fallback: coba via subprocess start
+    except Exception:
+        # Fallback: shell start
         try:
-            subprocess.Popen(["cmd", "/c", "start", app_name], shell=False)
-            return f"OK (fallback): '{app_name}' dibuka."
+            subprocess.Popen(f'start "" "{app_name}"', shell=True)
+            return f"OK (fallback shell): '{app_name}'"
         except Exception as e2:
             return f"GAGAL membuka '{app_name}': {e2}"
 
@@ -122,6 +143,9 @@ async def handler(websocket):
             if "url" in action:
                 result = open_url(action["url"])
                 exec_display = f"Buka URL: {action['display']}"
+            elif "cmd" in action:
+                result = open_cmd(action["cmd"])
+                exec_display = f"Buka: {action['display']}"
             else:
                 result = open_app(action["app"])
                 exec_display = f"Buka aplikasi: {action['display']}"
@@ -141,13 +165,29 @@ async def handler(websocket):
         print(f"[-] Client terputus (error): {client_addr} — {e}")
 
 
-# ── Buka Chrome ke asisten.html ───────────────────────────────────────────────
+# ── HTTP Server (agar Chrome menyimpan izin mic) ─────────────────────────────
+class SilentHTTPHandler(SimpleHTTPRequestHandler):
+    """HTTP handler tanpa log di terminal."""
+    def log_message(self, format, *args):
+        pass  # diam
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(HTML_DIR), **kwargs)
+
+
+def start_http_server():
+    server = HTTPServer((HOST, HTTP_PORT), SilentHTTPHandler)
+    print(f"[HTTP] Server aktif di http://{HOST}:{HTTP_PORT}")
+    server.serve_forever()
+
+
+# ── Buka Chrome ke asisten.html via localhost ─────────────────────────────────
 def launch_browser():
     """
-    Buka asisten.html di Chrome dengan tampilan minimalis (--app mode).
-    Jika Chrome tidak ditemukan, gunakan browser default.
+    Buka asisten.html via http://localhost agar Chrome menyimpan izin mic.
+    Tampilan --app mode (tanpa address bar).
     """
-    html_uri = HTML_PATH.as_uri()
+    url = f"http://{HOST}:{HTTP_PORT}/asisten.html"
 
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -164,27 +204,32 @@ def launch_browser():
     if chrome_exe:
         subprocess.Popen([
             chrome_exe,
-            f"--app={html_uri}",
+            f"--app={url}",
             "--window-size=540,520",
             "--window-position=40,40",
         ])
-        print(f"[Browser] Chrome dibuka: {html_uri}")
+        print(f"[Browser] Chrome dibuka: {url}")
     else:
-        webbrowser.open(html_uri)
-        print(f"[Browser] Browser default dibuka: {html_uri}")
+        webbrowser.open(url)
+        print(f"[Browser] Browser default dibuka: {url}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
     print("=" * 52)
     print("  Asisten PC — Server WebSocket Aktif")
-    print(f"  Listening di ws://{HOST}:{PORT}")
+    print(f"  WS  : ws://{HOST}:{PORT}")
+    print(f"  HTTP: http://{HOST}:{HTTP_PORT}")
     print("  Tekan Ctrl+C untuk berhenti.")
     print("=" * 52)
 
+    # Jalankan HTTP server di thread terpisah (daemon)
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+
     # Buka browser setelah server siap
     loop = asyncio.get_event_loop()
-    loop.call_later(1.0, launch_browser)
+    loop.call_later(1.2, launch_browser)
 
     async with websockets.serve(handler, HOST, PORT):
         await asyncio.Future()  # jalan selamanya
