@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Asisten PC — Voice Mode</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #13131a;
+      --border: #1e1e2e;
+      --accent: #7c6af7;
+      --accent-glow: rgba(124, 106, 247, 0.35);
+      --green: #3be8b0;
+      --red: #f76a6a;
+      --text: #e4e4f0;
+      --muted: #5a5a7a;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      padding: 24px;
+      overflow: hidden;
+    }
+
+    /* Subtle background grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(124, 106, 247, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(124, 106, 247, 0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px 48px;
+      width: 100%;
+      max-width: 520px;
+      text-align: center;
+      position: relative;
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
+
+    /* Orb */
+    .orb-wrapper {
+      position: relative;
+      width: 120px;
+      height: 120px;
+      margin: 0 auto 32px;
+    }
+
+    .orb {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #9b8dff, #5a4fcf 60%, #2a1f7a);
+      box-shadow: 0 0 40px var(--accent-glow), 0 0 80px rgba(124, 106, 247, 0.15);
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    .orb svg { width: 40px; height: 40px; fill: white; opacity: 0.9; }
+
+    /* Pulse rings when listening */
+    .ring {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid var(--accent);
+      opacity: 0;
+      animation: none;
+    }
+    .ring:nth-child(1) { animation-delay: 0s; }
+    .ring:nth-child(2) { animation-delay: 0.5s; }
+    .ring:nth-child(3) { animation-delay: 1s; }
+
+    .listening .ring {
+      animation: ripple 2s infinite ease-out;
+    }
+
+    @keyframes ripple {
+      0%   { transform: scale(1); opacity: 0.7; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+
+    /* Speaking animation — orb pulses */
+    .speaking .orb {
+      animation: pulse-orb 0.6s ease-in-out infinite alternate;
+    }
+    @keyframes pulse-orb {
+      from { transform: scale(1);    box-shadow: 0 0 40px var(--accent-glow); }
+      to   { transform: scale(1.08); box-shadow: 0 0 70px rgba(59, 232, 176, 0.4); }
+    }
+
+    /* Status label */
+    #status-label {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 16px;
+      transition: color 0.3s;
+    }
+    .listening  #status-label { color: var(--green); }
+    .speaking   #status-label { color: var(--accent); }
+    .error      #status-label { color: var(--red); }
+
+    /* Interim transcript */
+    #interim-text {
+      font-size: 22px;
+      font-weight: 700;
+      min-height: 36px;
+      color: var(--text);
+      letter-spacing: -0.3px;
+      transition: opacity 0.2s;
+    }
+    #interim-text.dim { opacity: 0.3; }
+
+    /* WebSocket status dot */
+    .ws-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 24px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.3s;
+    }
+    .dot.connected { background: var(--green); box-shadow: 0 0 8px rgba(59,232,176,0.6); }
+    .dot.error     { background: var(--red); }
+
+    /* Log area */
+    .log-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 520px;
+      overflow: hidden;
+    }
+
+    .log-header {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      letter-spacing: 2px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #log {
+      height: 180px;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    .log-entry {
+      font-size: 13px;
+      display: flex;
+      gap: 10px;
+      animation: slide-in 0.3s ease;
+    }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+    .log-msg.sys    { color: var(--muted); }
+    .log-msg.heard  { color: var(--green); font-weight: 600; }
+    .log-msg.exec   { color: var(--accent); }
+    .log-msg.err    { color: var(--red); }
+  </style>
+</head>
+<body>
+
+<div class="card" id="main-card">
+  <div class="brand">Asisten PC &mdash; Voice Mode</div>
+
+  <div class="orb-wrapper" id="orb-wrapper">
+    <div class="ring"></div>
+    <div class="ring"></div>
+    <div class="ring"></div>
+    <div class="orb" id="orb" title="Klik untuk mulai/berhenti">
+      <!-- Mic icon -->
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm6.5 9a1 1 0 0 1 1 1 7.5 7.5 0 0 1-6.5 7.43V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.57A7.5 7.5 0 0 1 4.5 11a1 1 0 0 1 2 0 5.5 5.5 0 0 0 11 0 1 1 0 0 1 1-1z"/>
+      </svg>
+    </div>
+  </div>
+
+  <div id="status-label">Klik orb untuk mulai</div>
+  <div id="interim-text" class="dim">—</div>
+
+  <div class="ws-status">
+    <div class="dot" id="ws-dot"></div>
+    <span id="ws-label">Menghubungkan ke server...</span>
+  </div>
+</div>
+
+<div class="log-card">
+  <div class="log-header">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+      <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <line x1="6" y1="4" x2="6" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="6" cy="9" r="0.6"/>
+    </svg>
+    Log Aktivitas
+  </div>
+  <div id="log"></div>
+</div>
+
+<script>
+  const WS_URL = 'ws://localhost:8765';
+  const LANG   = 'id-ID';
+
+  const orbWrapper  = document.getElementById('orb-wrapper');
+  const card        = document.getElementById('main-card');
+  const statusLabel = document.getElementById('status-label');
+  const interimEl   = document.getElementById('interim-text');
+  const wsDot       = document.getElementById('ws-dot');
+  const wsLabel     = document.getElementById('ws-label');
+  const logEl       = document.getElementById('log');
+
+  let ws = null;
+  let recognition = null;
+  let isListening = false;
+
+  // ── Logging ──────────────────────────────────────────────────────────────
+  function addLog(msg, type = 'sys') {
+    const now  = new Date();
+    const time = now.toTimeString().slice(0, 8);
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<span class="log-time">${time}</span><span class="log-msg ${type}">${msg}</span>`;
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────────────
+  function connectWS() {
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      wsDot.className = 'dot connected';
+      wsLabel.textContent = 'Terhubung ke server Python';
+      addLog('WebSocket terhubung ke server Python.', 'sys');
+    };
+
+    ws.onclose = () => {
+      wsDot.className = 'dot error';
+      wsLabel.textContent = 'Server terputus — mencoba ulang...';
+      addLog('Koneksi WebSocket terputus. Reconnect dalam 3 detik...', 'err');
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = () => {
+      wsDot.className = 'dot error';
+      wsLabel.textContent = 'Gagal terhubung ke server';
+    };
+
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'exec') {
+        addLog(`⚡ Mengeksekusi: ${data.command}`, 'exec');
+        setMode('listening');
+      } else if (data.type === 'info') {
+        addLog(data.message, 'sys');
+      }
+    };
+  }
+
+  // ── Speech Recognition ────────────────────────────────────────────────────
+  function setupRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      addLog('ERROR: Browser tidak mendukung Web Speech API. Gunakan Chrome.', 'err');
+      return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.continuous     = false;
+    recognition.interimResults = true;
+    recognition.lang           = LANG;
+
+    recognition.onstart = () => {
+      setMode('listening');
+      addLog('Mendengarkan...', 'sys');
+    };
+
+    recognition.onresult = (e) => {
+      let interim = '';
+      let final   = '';
+
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
+      }
+
+      if (interim) {
+        interimEl.textContent = interim;
+        interimEl.classList.remove('dim');
+        setMode('speaking');
+      }
+
+      if (final) {
+        const clean = final.trim().toLowerCase();
+        interimEl.textContent = final.trim();
+        interimEl.classList.remove('dim');
+        addLog(`"${final.trim()}"`, 'heard');
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'transcript', text: clean }));
+        }
+      }
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === 'no-speech') {
+        // silent — restart saja
+      } else {
+        addLog(`Speech error: ${e.error}`, 'err');
+        setMode('error');
+      }
+    };
+
+    recognition.onend = () => {
+      if (isListening) {
+        // otomatis restart agar terus mendengarkan
+        setTimeout(() => recognition.start(), 300);
+      }
+    };
+  }
+
+  // ── UI State ──────────────────────────────────────────────────────────────
+  function setMode(mode) {
+    orbWrapper.className = 'orb-wrapper ' + mode;
+    card.className       = 'card ' + mode;
+
+    if (mode === 'listening') {
+      statusLabel.textContent = 'Mendengarkan...';
+      interimEl.textContent   = '—';
+      interimEl.classList.add('dim');
+    } else if (mode === 'speaking') {
+      statusLabel.textContent = 'Menganalisa ucapan...';
+    } else if (mode === 'idle') {
+      statusLabel.textContent = 'Klik orb untuk mulai';
+    } else if (mode === 'error') {
+      statusLabel.textContent = 'Error — coba lagi';
+    }
+  }
+
+  function toggleListening() {
+    if (!recognition) return;
+    if (isListening) {
+      isListening = false;
+      recognition.stop();
+      setMode('idle');
+      addLog('Asisten dimatikan.', 'sys');
+    } else {
+      isListening = true;
+      recognition.start();
+    }
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  setupRecognition();
+  connectWS();
+  document.getElementById('orb').addEventListener('click', toggleListening);
+
+  // Auto-start setelah 800ms (halaman sudah siap)
+  setTimeout(() => {
+    if (recognition) {
+      isListening = true;
+      recognition.start();
+    }
+  }, 800);
+</script>
+
+</body>
+</html>
