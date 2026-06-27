@@ -81,7 +81,7 @@ py --version
 Masuk ke folder project:
 
 ```powershell
-cd "D:\YRJ Developer\Asisten PC"
+cd "Direktori"
 ```
 
 Install dependency utama untuk mode browser:
@@ -161,7 +161,7 @@ Isi file tersebut:
 
 ```bat
 @echo off
-cd /d "D:\YRJ Developer\Asisten PC"
+cd /d "Direktori"
 python server_asisten.py
 pause
 ```
@@ -170,7 +170,7 @@ Jika di komputer kamu perintah yang aktif adalah `py`, gunakan versi ini:
 
 ```bat
 @echo off
-cd /d "D:\YRJ Developer\Asisten PC"
+cd /d "Direktori"
 py server_asisten.py
 pause
 ```
